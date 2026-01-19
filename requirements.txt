@@ -1,0 +1,6 @@
+streamlit
+streamlit-gsheets
+streamlit-calendar
+pandas
+requests
+st-gsheets-connection
