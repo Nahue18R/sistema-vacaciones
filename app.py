@@ -72,7 +72,7 @@ try:
     df_empleados['ID_Empleado'] = df_empleados['ID_Empleado'].astype(str)
 
 except Exception as e:
-    st.error("Error conectando con Google Sheets.")
+    st.error(f"⚠️ Error detallado: {e}") # <--- NUEVA: Nos muestra el texto técnico
     st.stop()
 
 # --- 2. FUNCIONES ---
@@ -337,3 +337,4 @@ elif menu == "📅 Calendario Global":
     """)
     
     st.caption("Referencias: 🟠 Pendiente de Aprobación | 🟢 Aprobado | 🔴 Rechazado")
+
