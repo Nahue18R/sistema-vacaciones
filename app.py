@@ -57,23 +57,37 @@ if not st.session_state.logged_in:
 # --- 1. CONEXIÓN Y DATOS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# --- 1. CONEXIÓN Y DATOS ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+
 try:
-    df_empleados = conn.read(worksheet="Empleados", ttl=5)
-    df_feriados = conn.read(worksheet="Feriados", ttl=600)
-    df_solicitudes = conn.read(worksheet="Solicitudes", ttl=0)
+    # ESTRATEGIA ANTI-BLOQUEO (Error 429)
+    # Feriados: No cambian nunca. Leemos 1 vez al día.
+    df_feriados = conn.read(worksheet="Feriados", ttl="1d") 
+    
+    # Empleados: Cambian poco. Leemos cada 10 minutos.
+    # (Al hacer conn.update, la librería es lista y refresca esto sola, así que es seguro)
+    df_empleados = conn.read(worksheet="Empleados", ttl="10m")
+    
+    # Solicitudes: Cambian frecuente. Leemos cada 2 segundos (pequeño respiro)
+    # Cambiamos ttl=0 por ttl=2 para evitar el bloqueo si das muchos clicks seguidos
+    df_solicitudes = conn.read(worksheet="Solicitudes", ttl=2)
 
     # Limpieza
     df_empleados.columns = df_empleados.columns.str.strip()
     df_solicitudes.columns = df_solicitudes.columns.str.strip()
     df_feriados['Fecha'] = pd.to_datetime(df_feriados['Fecha'], dayfirst=True, errors='coerce').dt.date
     df_empleados['Dias_Restantes'] = pd.to_numeric(df_empleados['Dias_Restantes'], errors='coerce').fillna(0)
-    
-    # Aseguramos que ID_Empleado sea string para que no se vea como número con coma
     df_empleados['ID_Empleado'] = df_empleados['ID_Empleado'].astype(str)
 
 except Exception as e:
-    st.error(f"⚠️ Error detallado: {e}") # <--- NUEVA: Nos muestra el texto técnico
-    st.stop()
+    # Si falla, esperamos 2 segundos y probamos una vez más (Reintento automático)
+    try:
+        time.sleep(2)
+        df_solicitudes = conn.read(worksheet="Solicitudes", ttl=0)
+    except Exception as e2:
+        st.error(f"⚠️ Google está saturado (Error 429). Espera 1 minuto y recarga. Detalle: {e}")
+        st.stop()
 
 # --- 2. FUNCIONES ---
 def calcular_dias_habiles(inicio, fin, feriados_lista):
@@ -337,4 +351,5 @@ elif menu == "📅 Calendario Global":
     """)
     
     st.caption("Referencias: 🟠 Pendiente de Aprobación | 🟢 Aprobado | 🔴 Rechazado")
+
 
