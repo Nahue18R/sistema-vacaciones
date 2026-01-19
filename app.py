@@ -133,7 +133,7 @@ if menu == "🏠 Mi Espacio":
                             }
                             
                             # TU URL LOCAL DE N8N
-                            webhook_url = "http://localhost:5678/webhook-test/solicitud-vacaciones"
+                            webhook_url = "https://spring-hedgeless-eccentrically.ngrok-free.dev/webhook-test/solicitud-vacaciones"
                             
                             requests.post(webhook_url, json=payload, timeout=2) # Timeout corto para no trabar la app
                             st.toast("📧 Notificación enviada a n8n correctamente.")
@@ -224,7 +224,7 @@ elif menu == "🔒 Gestión Supervisor":
                                 nuevo_saldo = 0 # Por si no lo encuentra (raro)
 
                             # 3. ENVIAR A N8N (Notificación de Aprobación)
-                            webhook_aprobacion = "http://localhost:5678/webhook-test/solicitud-aprobada" # <--- TU NUEVO LINK
+                            webhook_aprobacion = "https://spring-hedgeless-eccentrically.ngrok-free.dev/webhook-test/solicitud-aprobada"
                             
                             # Calculamos fecha retorno para el cuadro
                             fecha_fin_dt = pd.to_datetime(row['Fecha_Fin'])
@@ -260,4 +260,5 @@ elif menu == "🔒 Gestión Supervisor":
         if clave_supervisor:
             st.error("Contraseña incorrecta")
         else:
+
             st.warning("Introduce la contraseña de supervisor en la barra lateral.")
