@@ -1,6 +1,6 @@
 streamlit
-streamlit-gsheets
+st-gsheets-connection
 streamlit-calendar
 pandas
 requests
-st-gsheets-connection
+
