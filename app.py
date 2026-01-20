@@ -243,7 +243,7 @@ if menu == "👥 Gestión de Personal":
                             "Estado": "Pendiente",
                             "Motivo_Comentario": motivo
                         }])
-                        conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nueva], ignore_index=True))
+                        conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nuevo], ignore_index=True))
                         
                         try:
                             ret = ff + timedelta(days=1)
@@ -320,3 +320,4 @@ elif menu == "📅 Calendario":
                     "color": c
                 })
     calendar(events=ev, options={"initialView": "dayGridMonth", "locale": "es"})
+
