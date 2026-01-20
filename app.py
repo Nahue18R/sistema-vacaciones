@@ -18,7 +18,7 @@ st.set_page_config(page_title="Sistema RRHH - Open25", layout="wide", initial_si
 BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" 
 
 WEBHOOK_SOLICITUD = f"{BASE_URL}/webhook-test/solicitud-vacaciones"
-WEBHOOK_APROBACION = f"{BASE_URL}/webhook-test/solicitud-aprobada"
+WEBHOOK_APROBACION = f"http://localhost:5678/webhook-test/solicitud-aprobada"
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -331,5 +331,6 @@ elif menu == "📅 Calendario":
                     "color": c
                 })
     calendar(events=ev, options={"initialView": "dayGridMonth", "locale": "es"})
+
 
 
