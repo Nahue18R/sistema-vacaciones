@@ -13,7 +13,6 @@ st.set_page_config(page_title="Sistema RRHH - Open25", layout="wide", initial_si
 # ⚠️ TUS LINKS DE NGROK (PÉGALOS AQUÍ)
 # ==========================================
 # Pega aquí tu link actual (el que termina en .ngrok-free.app o .dev)
-# Ejemplo: BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev "
 BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" # <--- ¡VERIFICA QUE ESTE SEA EL TUYO ACTUAL!
 
 WEBHOOK_SOLICITUD = f"{BASE_URL}/webhook-test/solicitud-vacaciones"
@@ -26,11 +25,24 @@ st.markdown("""
     .stMetric {
         background-color: #f9f9f9;
         border: 1px solid #e0e0e0;
-        padding: 15px;
-        border-radius: 10px;
+        padding: 10px;
+        border-radius: 8px;
     }
     .stButton button {
         border-radius: 8px;
+    }
+    /* Estilo para que el nombre del empleado se vea grande y no se corte */
+    .nombre-empleado-titulo {
+        font-size: 26px !important;
+        font-weight: 700 !important;
+        color: #0f172a;
+        margin-bottom: 5px;
+        font-family: sans-serif;
+    }
+    .subtitulo-ficha {
+        color: #64748b;
+        font-size: 14px;
+        margin-bottom: 20px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -57,36 +69,34 @@ if not st.session_state.logged_in:
 # --- 1. CONEXIÓN Y DATOS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 1. CONEXIÓN Y DATOS ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-
 try:
     # ESTRATEGIA ANTI-BLOQUEO (Error 429)
     # Feriados: No cambian nunca. Leemos 1 vez al día.
     df_feriados = conn.read(worksheet="Feriados", ttl="1d") 
     
     # Empleados: Cambian poco. Leemos cada 10 minutos.
-    # (Al hacer conn.update, la librería es lista y refresca esto sola, así que es seguro)
     df_empleados = conn.read(worksheet="Empleados", ttl="10m")
     
-    # Solicitudes: Cambian frecuente. Leemos cada 2 segundos (pequeño respiro)
-    # Cambiamos ttl=0 por ttl=2 para evitar el bloqueo si das muchos clicks seguidos
+    # Solicitudes: Cambian frecuente. Leemos cada 2 segundos.
     df_solicitudes = conn.read(worksheet="Solicitudes", ttl=2)
 
-    # Limpieza
+    # Limpieza básica
     df_empleados.columns = df_empleados.columns.str.strip()
     df_solicitudes.columns = df_solicitudes.columns.str.strip()
     df_feriados['Fecha'] = pd.to_datetime(df_feriados['Fecha'], dayfirst=True, errors='coerce').dt.date
     df_empleados['Dias_Restantes'] = pd.to_numeric(df_empleados['Dias_Restantes'], errors='coerce').fillna(0)
-    df_empleados['ID_Empleado'] = df_empleados['ID_Empleado'].astype(str)
+    
+    # --- CORRECCIÓN DEL LEGAJO (El truco del .0) ---
+    # Convertimos a número, luego a entero (para quitar decimales) y finalmente a texto
+    df_empleados['ID_Empleado'] = pd.to_numeric(df_empleados['ID_Empleado'], errors='coerce').fillna(0).astype(int).astype(str)
 
 except Exception as e:
-    # Si falla, esperamos 2 segundos y probamos una vez más (Reintento automático)
+    # Reintento automático si falla
     try:
         time.sleep(2)
         df_solicitudes = conn.read(worksheet="Solicitudes", ttl=0)
     except Exception as e2:
-        st.error(f"⚠️ Google está saturado (Error 429). Espera 1 minuto y recarga. Detalle: {e}")
+        st.error(f"⚠️ Google está saturado. Espera 1 minuto. Detalle: {e}")
         st.stop()
 
 # --- 2. FUNCIONES ---
@@ -101,7 +111,7 @@ def calcular_dias_habiles(inicio, fin, feriados_lista):
         fecha_actual += timedelta(days=1)
     return dias_totales
 
-# --- 3. MENÚ LATERAL (Navegación Admin) ---
+# --- 3. MENÚ LATERAL ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/9320/9320295.png", width=60)
     st.title("Panel RRHH")
@@ -125,7 +135,7 @@ with st.sidebar:
 if menu == "👥 Gestión de Empleados":
     st.header("Gestión de Ausencias y Vacaciones")
     
-    # --- SELECTOR DE EMPLEADO (Estilo Dashboard) ---
+    # --- SELECTOR DE EMPLEADO ---
     lista_nombres = df_empleados['Nombre_Completo'].unique()
     
     col_sel, col_vacia = st.columns([1, 2])
@@ -135,25 +145,27 @@ if menu == "👥 Gestión de Empleados":
     # Obtenemos datos del empleado seleccionado
     datos_emp = df_empleados[df_empleados['Nombre_Completo'] == empleado_selec].iloc[0]
 
-# --- TARJETAS DE INFORMACIÓN (KPIs) ---
-    st.markdown("### 📋 Ficha del Colaborador")
+    # --- TARJETAS DE INFORMACIÓN (NUEVO DISEÑO) ---
+    st.markdown("---")
     
-    # Preparamos los datos nuevos (usamos .get por si la columna está vacía en el Excel)
-    fecha_ingreso = datos_emp.get('Fecha_Ingreso', 'Sin dato')
-    detalle_vac = datos_emp.get('Detalle_Vacaciones', '-')
+    # 1. Nombre en grande (HTML/CSS) para que no se corte
+    st.markdown(f'<div class="nombre-empleado-titulo">👤 {datos_emp["Nombre_Completo"]}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="subtitulo-ficha">Legajo: {datos_emp["ID_Empleado"]}</div>', unsafe_allow_html=True)
     
-    # Fila 1: Datos Principales
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Legajo", datos_emp['ID_Empleado'])
-    k2.metric("Nombre", datos_emp['Nombre_Completo'])
-    k3.metric("Fecha Ingreso", str(fecha_ingreso))
-    
-    # Calculamos solicitudes pendientes
-    pendientes_emp = len(df_solicitudes[(df_solicitudes['Nombre_Empleado'] == empleado_selec) & (df_solicitudes['Estado'] == 'Pendiente')])
-    k4.metric("Solicitudes en curso", pendientes_emp, delta_color="off")
+    # 2. Obtenemos los datos nuevos (usamos .get por si la columna no existe aún)
+    fecha_ingreso = datos_emp.get('Fecha_Ingreso', 'Falta cargar')
+    detalle_vacaciones = datos_emp.get('Detalle_Vacaciones', 'Sin detalle cargado')
 
-    # Fila 2: El Desglose de Vacaciones (Destacado)
-    st.info(f"💰 **Saldo Total:** {int(datos_emp['Dias_Restantes'])} días  \nℹ️ **Detalle:** {detalle_vac}")
+    # 3. Métricas
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Fecha de Ingreso", str(fecha_ingreso))
+    k2.metric("Saldo Disponible", f"{int(datos_emp['Dias_Restantes'])} días")
+    
+    pendientes_emp = len(df_solicitudes[(df_solicitudes['Nombre_Empleado'] == empleado_selec) & (df_solicitudes['Estado'] == 'Pendiente')])
+    k3.metric("Solicitudes en curso", pendientes_emp, delta_color="off")
+    
+    # 4. Caja de detalle de vacaciones
+    st.info(f"ℹ️ **Detalle del Saldo:** {detalle_vacaciones}")
 
     st.markdown("---")
 
@@ -170,14 +182,14 @@ if menu == "👥 Gestión de Empleados":
                 fecha_inicio = c1.date_input("Desde", date.today())
                 fecha_fin = c2.date_input("Hasta", date.today())
                 
-                # Lógica de sustitutos: Excluir al propio empleado y agregar opción "Ninguno"
+                # Lista de sustitutos
                 lista_sustitutos = df_empleados[df_empleados['Nombre_Completo'] != empleado_selec]['Nombre_Completo'].tolist()
                 lista_sustitutos.insert(0, "No precisa / Sin sustituto")
                 sustituto = st.selectbox("Sustituto Asignado", lista_sustitutos)
                 
                 motivo = st.text_area("Observaciones / Motivo")
                 
-                # Cálculo en tiempo real
+                # Cálculo
                 lista_feriados = df_feriados['Fecha'].tolist() if not df_feriados.empty else []
                 dias_calc = calcular_dias_habiles(fecha_inicio, fecha_fin, lista_feriados)
                 st.info(f"📅 Días hábiles a descontar: **{dias_calc}**")
@@ -206,7 +218,7 @@ if menu == "👥 Gestión de Empleados":
                         updated_df = pd.concat([df_solicitudes, nueva_fila], ignore_index=True)
                         conn.update(worksheet="Solicitudes", data=updated_df)
                         
-                        # 2. NOTIFICAR (Para que el jefe apruebe formalmente)
+                        # 2. NOTIFICAR 
                         try:
                             fecha_retorno = fecha_fin + timedelta(days=1)
                             saldo_futuro = datos_emp['Dias_Restantes'] - dias_calc
@@ -360,6 +372,3 @@ elif menu == "📅 Calendario Global":
     """)
     
     st.caption("Referencias: 🟠 Pendiente de Aprobación | 🟢 Aprobado | 🔴 Rechazado")
-
-
-
