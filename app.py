@@ -135,16 +135,25 @@ if menu == "👥 Gestión de Empleados":
     # Obtenemos datos del empleado seleccionado
     datos_emp = df_empleados[df_empleados['Nombre_Completo'] == empleado_selec].iloc[0]
 
-    # --- TARJETAS DE INFORMACIÓN (KPIs) ---
+# --- TARJETAS DE INFORMACIÓN (KPIs) ---
     st.markdown("### 📋 Ficha del Colaborador")
+    
+    # Preparamos los datos nuevos (usamos .get por si la columna está vacía en el Excel)
+    fecha_ingreso = datos_emp.get('Fecha_Ingreso', 'Sin dato')
+    detalle_vac = datos_emp.get('Detalle_Vacaciones', '-')
+    
+    # Fila 1: Datos Principales
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Legajo", datos_emp['ID_Empleado'])
     k2.metric("Nombre", datos_emp['Nombre_Completo'])
-    k3.metric("Saldo Vacaciones", f"{int(datos_emp['Dias_Restantes'])} días")
+    k3.metric("Fecha Ingreso", str(fecha_ingreso))
     
-    # Calculamos solicitudes pendientes de este usuario
+    # Calculamos solicitudes pendientes
     pendientes_emp = len(df_solicitudes[(df_solicitudes['Nombre_Empleado'] == empleado_selec) & (df_solicitudes['Estado'] == 'Pendiente')])
     k4.metric("Solicitudes en curso", pendientes_emp, delta_color="off")
+
+    # Fila 2: El Desglose de Vacaciones (Destacado)
+    st.info(f"💰 **Saldo Total:** {int(datos_emp['Dias_Restantes'])} días  \nℹ️ **Detalle:** {detalle_vac}")
 
     st.markdown("---")
 
@@ -351,5 +360,6 @@ elif menu == "📅 Calendario Global":
     """)
     
     st.caption("Referencias: 🟠 Pendiente de Aprobación | 🟢 Aprobado | 🔴 Rechazado")
+
 
 
