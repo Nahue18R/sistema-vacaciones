@@ -18,7 +18,7 @@ st.set_page_config(page_title="Sistema RRHH - Open25", layout="wide", initial_si
 BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" 
 
 WEBHOOK_SOLICITUD = f"{BASE_URL}/webhook-test/solicitud-vacaciones"
-WEBHOOK_APROBACION = f"http://localhost:5678/webhook-test/solicitud-aprobada"
+WEBHOOK_APROBACION = f"{BASE_URL}/webhook-test/solicitud-aprobada"
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -270,22 +270,71 @@ elif menu == "✅ Aprobaciones":
                 c2.info(f"⏳ Días a descontar: {r['Total_Dias_Habiles']}")
                 
                 if c3.button("✅ Aprobar", key=f"y{i}", use_container_width=True):
-                    # 1. Cambiar estado
-                    df_solicitudes.at[i, 'Estado'] = 'Aprobado'
-                    conn.update(worksheet="Solicitudes", data=df_solicitudes)
+                    # 1. Cambiar estado visualmente
+                    st.info("🔄 Procesando aprobación...")
                     
-                    # 2. Descontar saldo (Leemos fresco)
-                    df_fresh = conn.read(worksheet="Empleados", ttl=0)
-                    df_fresh.columns = df_fresh.columns.str.strip()
-                    df_fresh['ID_Empleado'] = pd.to_numeric(df_fresh['ID_Empleado'], errors='coerce').fillna(0).astype(int).astype(str)
-                    
-                    idx = df_fresh[df_fresh['ID_Empleado'] == str(r['ID_Empleado'])].index
-                    nuevo_saldo = 0
-                    if not idx.empty:
-                        nuevo_saldo = df_fresh.at[idx[0], 'Dias_Restantes'] - r['Total_Dias_Habiles']
-                        df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
-                        conn.update(worksheet="Empleados", data=df_fresh)
+                    # 2. Descontar saldo
+                    try:
+                        # Leemos fresco
+                        df_fresh = conn.read(worksheet="Empleados", ttl=0)
+                        df_fresh.columns = df_fresh.columns.str.strip()
+                        
+                        # Convertimos ambos IDs a string limpio para comparar
+                        id_buscado = str(r['ID_Empleado']).strip().replace(".0", "")
+                        df_fresh['ID_Empleado'] = df_fresh['ID_Empleado'].astype(str).str.strip().str.replace(".0", "", regex=False)
+                        
+                        st.write(f"🔎 Buscando legajo: '{id_buscado}' en la base de datos...")
+                        
+                        idx = df_fresh[df_fresh['ID_Empleado'] == id_buscado].index
+                        
+                        nuevo_saldo = 0
+                        if not idx.empty:
+                            saldo_anterior = df_fresh.at[idx[0], 'Dias_Restantes']
+                            dias_a_descontar = r['Total_Dias_Habiles']
+                            nuevo_saldo = saldo_anterior - dias_a_descontar
+                            
+                            st.write(f"✅ Empleado encontrado. Saldo anterior: {saldo_anterior}. A descontar: {dias_a_descontar}. Nuevo saldo: {nuevo_saldo}")
+                            
+                            # Guardamos en Excel
+                            df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
+                            conn.update(worksheet="Empleados", data=df_fresh)
+                            st.success("💰 Saldo actualizado en Excel.")
+                        else:
+                            st.error(f"❌ ERROR CRÍTICO: No encontré el legajo {id_buscado} en la hoja Empleados. Revisa que los números sean idénticos.")
+                            st.stop() # Detenemos aquí para que veas el error
 
+                        # 3. Actualizar estado de la solicitud
+                        df_solicitudes.at[i, 'Estado'] = 'Aprobado'
+                        conn.update(worksheet="Solicitudes", data=df_solicitudes)
+
+                        # 4. Mandar mail
+                        st.write("📧 Intentando enviar correo a n8n...")
+                        fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
+                        payload = {
+                            "legajo": str(r['ID_Empleado']),
+                            "nombre": r['Nombre_Empleado'],
+                            "tipo": r['Tipo_Ausencia'],
+                            "desde": pd.to_datetime(r['Fecha_Inicio']).strftime("%d/%m/%Y"),
+                            "hasta": pd.to_datetime(r['Fecha_Fin']).strftime("%d/%m/%Y"),
+                            "dia_vuelve": fecha_ret.strftime("%d/%m/%Y"),
+                            "dias_tomados": int(r['Total_Dias_Habiles']),
+                            "dias_restantes": int(nuevo_saldo),
+                            "email_jefe": "nruiz@open25.com.ar"
+                        }
+                        st.json(payload) # Muestra en pantalla qué datos está enviando
+                        
+                        resp = requests.post(WEBHOOK_APROBACION, json=payload, timeout=5)
+                        
+                        if resp.status_code == 200:
+                            st.success("📧 Correo enviado exitosamente (n8n respondió OK).")
+                        else:
+                            st.error(f"⚠️ n8n respondió con error: {resp.status_code}")
+
+                        time.sleep(4) # Pausa para que leas los mensajes
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Ocurrió un error inesperado: {e}")
                     # 3. Mandar mail
                     try: 
                         fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
@@ -331,6 +380,7 @@ elif menu == "📅 Calendario":
                     "color": c
                 })
     calendar(events=ev, options={"initialView": "dayGridMonth", "locale": "es"})
+
 
 
 
