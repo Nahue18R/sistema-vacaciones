@@ -3,4 +3,5 @@ st-gsheets-connection
 streamlit-calendar
 pandas
 requests
+python-dateutil
 
