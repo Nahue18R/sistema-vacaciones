@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import timedelta, date, datetime
 import requests
 import time
-import os # Necesario para buscar las fotos
+import os
 from dateutil.relativedelta import relativedelta
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -14,7 +14,9 @@ st.set_page_config(page_title="Sistema RRHH - Open25", layout="wide", initial_si
 # ==========================================
 # ⚠️ TUS LINKS DE NGROK
 # ==========================================
-BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" # <--- ¡VERIFICA QUE ESTE SEA EL TUYO!
+# Pega aquí tu link actual de hoy
+BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" 
+
 WEBHOOK_SOLICITUD = f"{BASE_URL}/webhook-test/solicitud-vacaciones"
 WEBHOOK_APROBACION = f"{BASE_URL}/webhook-test/solicitud-aprobada"
 
@@ -77,23 +79,18 @@ try:
     df_empleados = conn.read(worksheet="Empleados", ttl="10m")
     df_solicitudes = conn.read(worksheet="Solicitudes", ttl=2)
 
-    # Limpieza de nombres de columna (quita espacios invisibles)
+    # Limpieza de columnas
     df_empleados.columns = df_empleados.columns.str.strip()
     df_solicitudes.columns = df_solicitudes.columns.str.strip()
     
-    # Formateo de Fechas
+    # Formateo de datos
     df_feriados['Fecha'] = pd.to_datetime(df_feriados['Fecha'], dayfirst=True, errors='coerce').dt.date
-    
-    # --- CORRECCIÓN FUERTE DE FECHA DE INGRESO ---
-    # Intenta convertir todo a fecha, si falla pone NaT (Not a Time)
     df_empleados['Fecha_Ingreso'] = pd.to_datetime(df_empleados['Fecha_Ingreso'], dayfirst=True, errors='coerce')
-
     df_empleados['Dias_Restantes'] = pd.to_numeric(df_empleados['Dias_Restantes'], errors='coerce').fillna(0)
-    # Convertimos ID a string limpio (sin .0)
+    # ID como string limpio
     df_empleados['ID_Empleado'] = pd.to_numeric(df_empleados['ID_Empleado'], errors='coerce').fillna(0).astype(int).astype(str)
 
 except Exception as e:
-    # Si falla, esperamos un poco y recargamos
     time.sleep(2)
     st.rerun()
 
@@ -110,30 +107,20 @@ def calcular_dias_habiles(inicio, fin, feriados_lista):
     return dias_totales
 
 def calcular_antiguedad_texto(fecha_inicio):
-    if pd.isna(fecha_inicio):
-        return "⚠️ Revisar fecha en Excel"
+    if pd.isna(fecha_inicio): return "⚠️ Revisar fecha en Excel"
     hoy = datetime.now()
     diferencia = relativedelta(hoy, fecha_inicio)
-    
     texto = []
-    if diferencia.years > 0:
-        texto.append(f"{diferencia.years} años")
-    if diferencia.months > 0:
-        texto.append(f"{diferencia.months} meses")
-    
-    if not texto:
-        return "Reciente ingreso"
+    if diferencia.years > 0: texto.append(f"{diferencia.years} años")
+    if diferencia.months > 0: texto.append(f"{diferencia.months} meses")
+    if not texto: return "Reciente ingreso"
     return " hace " + " y ".join(texto)
 
-# Función para buscar foto local
 def obtener_foto(legajo):
-    # Lista de extensiones posibles
     extensiones = ['.jpg', '.jpeg', '.png', '.JPG', '.PNG']
     for ext in extensiones:
         archivo = f"{legajo}{ext}"
-        if os.path.exists(archivo):
-            return archivo
-    # Si no encuentra ninguna, devuelve silueta
+        if os.path.exists(archivo): return archivo
     return "https://cdn-icons-png.flaticon.com/512/3135/3135715.png"
 
 # --- 3. MENÚ LATERAL ---
@@ -159,32 +146,22 @@ if menu == "👥 Gestión de Personal":
 
     datos_emp = df_empleados[df_empleados['Nombre_Completo'] == empleado_selec].iloc[0]
 
-    # --- FICHA DE EMPLEADO ---
     st.markdown("---")
-    
     col_foto, col_info, col_kpi = st.columns([1, 3, 2])
     
     with col_foto:
-        # Buscamos la foto localmente usando el LEGAJO
         legajo_actual = str(datos_emp['ID_Empleado'])
-        foto_path = obtener_foto(legajo_actual)
-        
-        # Mostramos la foto (redondeada simulada con width fijo)
-        st.image(foto_path, width=130)
-        
-        # Botón a Documentos (Link externo)
+        st.image(obtener_foto(legajo_actual), width=130)
         link_docs = datos_emp.get('Link_Legajo', '#')
-        if pd.notna(link_docs) and str(link_docs).strip() != "" and str(link_docs) != "#":
+        if pd.notna(link_docs) and str(link_docs).strip() not in ["", "#"]:
              st.link_button("📂 Ver Legajo", link_docs, use_container_width=True)
 
     with col_info:
         st.markdown(f'<div class="nombre-titulo">{datos_emp["Nombre_Completo"]}</div>', unsafe_allow_html=True)
-        
-        # Cálculo de Antigüedad
         fecha_ing = datos_emp.get('Fecha_Ingreso', pd.NaT)
         
         if pd.isna(fecha_ing):
-             fecha_texto = "Sin dato (Verificar Excel)"
+             fecha_texto = "Sin dato"
              texto_antiguedad = "-"
         else:
              fecha_texto = fecha_ing.strftime('%d/%m/%Y')
@@ -192,13 +169,10 @@ if menu == "👥 Gestión de Personal":
         
         st.markdown(f'<div class="puesto-subtitulo">Legajo: {datos_emp["ID_Empleado"]} | Ingreso: {fecha_texto}</div>', unsafe_allow_html=True)
         
-        if texto_antiguedad != "-":
-            st.success(f"🏅 **Antigüedad:** {texto_antiguedad}")
-        else:
-            st.warning("⚠️ No se pudo calcular antigüedad (Falta fecha)")
+        if texto_antiguedad != "-": st.success(f"🏅 **Antigüedad:** {texto_antiguedad}")
+        else: st.warning("⚠️ No se pudo calcular antigüedad")
         
-        detalle = datos_emp.get('Detalle_Vacaciones', 'Sin detalle')
-        st.info(f"ℹ️ **Desglose Vacaciones:** {detalle}")
+        st.info(f"ℹ️ **Desglose:** {datos_emp.get('Detalle_Vacaciones', 'Sin detalle')}")
 
     with col_kpi:
         st.metric("Saldo Disponible", f"{int(datos_emp['Dias_Restantes'])} días")
@@ -207,7 +181,6 @@ if menu == "👥 Gestión de Personal":
 
     st.markdown("---")
 
-    # --- CARGA DE NOVEDADES ---
     c_form, c_hist = st.columns([1, 1.3])
     with c_form:
         with st.container(border=True):
@@ -231,7 +204,8 @@ if menu == "👥 Gestión de Personal":
                     if dias <= 0: st.error("Fechas incorrectas")
                     elif tipo == "Vacaciones" and dias > datos_emp['Dias_Restantes']: st.error("Sin saldo")
                     else:
-                        nuevo = pd.DataFrame([{
+                        # 1. Crear fila nueva
+                        nuevo = pd.DataFrame([{ 
                             "ID_Solicitud": f"REQ-{len(df_solicitudes)+1000}",
                             "ID_Empleado": datos_emp['ID_Empleado'],
                             "Nombre_Empleado": empleado_selec,
@@ -243,8 +217,10 @@ if menu == "👥 Gestión de Personal":
                             "Estado": "Pendiente",
                             "Motivo_Comentario": motivo
                         }])
+                        # 2. Guardar en Excel
                         conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nuevo], ignore_index=True))
                         
+                        # 3. Avisar al jefe (Webhook)
                         try:
                             ret = ff + timedelta(days=1)
                             req_data = {
@@ -260,6 +236,7 @@ if menu == "👥 Gestión de Personal":
                             }
                             requests.post(WEBHOOK_SOLICITUD, json=req_data, timeout=2)
                         except: pass
+                        
                         st.success("¡Registrado!")
                         time.sleep(1)
                         st.rerun()
@@ -269,8 +246,7 @@ if menu == "👥 Gestión de Personal":
         h = df_solicitudes[df_solicitudes['Nombre_Empleado'] == empleado_selec].sort_index(ascending=False)
         if not h.empty:
             st.dataframe(h[['Fecha_Inicio', 'Fecha_Fin', 'Tipo_Ausencia', 'Estado']], hide_index=True, use_container_width=True)
-        else:
-            st.info("Sin registros.")
+        else: st.info("Sin registros.")
 
 # =======================================================
 # PÁGINA 2: APROBACIONES
@@ -278,28 +254,63 @@ if menu == "👥 Gestión de Personal":
 elif menu == "✅ Aprobaciones":
     st.header("Centro de Aprobaciones")
     pend = df_solicitudes[df_solicitudes['Estado'] == 'Pendiente']
-    if pend.empty: st.success("Todo al día 🚀")
+    
+    if pend.empty: 
+        st.success("Todo al día 🚀")
     else:
+        st.write(f"Tienes {len(pend)} solicitudes pendientes.")
         for i, r in pend.iterrows():
             with st.container(border=True):
                 c1, c2, c3 = st.columns([2,2,1])
                 c1.markdown(f"**{r['Nombre_Empleado']}**")
-                c1.caption(r['Tipo_Ausencia'])
-                c2.write(f"📅 {r['Fecha_Inicio']} al {r['Fecha_Fin']} ({r['Total_Dias_Habiles']}d)")
+                c1.caption(f"Tipo: {r['Tipo_Ausencia']}")
+                c1.text(f"Legajo: {r['ID_Empleado']}")
                 
-                if c3.button("✅", key=f"y{i}"):
+                c2.write(f"📅 **{r['Fecha_Inicio']}** al **{r['Fecha_Fin']}**")
+                c2.info(f"⏳ Días a descontar: {r['Total_Dias_Habiles']}")
+                
+                if c3.button("✅ Aprobar", key=f"y{i}", use_container_width=True):
+                    # 1. Cambiar estado
                     df_solicitudes.at[i, 'Estado'] = 'Aprobado'
                     conn.update(worksheet="Solicitudes", data=df_solicitudes)
-                    idx = df_empleados[df_empleados['ID_Empleado'].astype(str) == str(r['ID_Empleado'])].index
+                    
+                    # 2. Descontar saldo (Leemos fresco)
+                    df_fresh = conn.read(worksheet="Empleados", ttl=0)
+                    df_fresh.columns = df_fresh.columns.str.strip()
+                    df_fresh['ID_Empleado'] = pd.to_numeric(df_fresh['ID_Empleado'], errors='coerce').fillna(0).astype(int).astype(str)
+                    
+                    idx = df_fresh[df_fresh['ID_Empleado'] == str(r['ID_Empleado'])].index
+                    nuevo_saldo = 0
                     if not idx.empty:
-                        df_empleados.at[idx[0], 'Dias_Restantes'] -= r['Total_Dias_Habiles']
-                        conn.update(worksheet="Empleados", data=df_empleados)
-                    try: requests.post(WEBHOOK_APROBACION, json={"nombre": r['Nombre_Empleado']}, timeout=1)
+                        nuevo_saldo = df_fresh.at[idx[0], 'Dias_Restantes'] - r['Total_Dias_Habiles']
+                        df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
+                        conn.update(worksheet="Empleados", data=df_fresh)
+
+                    # 3. Mandar mail
+                    try: 
+                        fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
+                        requests.post(WEBHOOK_APROBACION, json={
+                            "legajo": str(r['ID_Empleado']),
+                            "nombre": r['Nombre_Empleado'],
+                            "tipo": r['Tipo_Ausencia'],
+                            "desde": pd.to_datetime(r['Fecha_Inicio']).strftime("%d/%m/%Y"),
+                            "hasta": pd.to_datetime(r['Fecha_Fin']).strftime("%d/%m/%Y"),
+                            "dia_vuelve": fecha_ret.strftime("%d/%m/%Y"),
+                            "dias_tomados": int(r['Total_Dias_Habiles']),
+                            "dias_restantes": int(nuevo_saldo),
+                            "email_jefe": "nruiz@open25.com.ar"
+                        }, timeout=3)
                     except: pass
+                    
+                    st.toast("✅ Aprobado")
+                    time.sleep(1)
                     st.rerun()
-                if c3.button("❌", key=f"n{i}"):
+                    
+                if c3.button("❌ Rechazar", key=f"n{i}", use_container_width=True):
                     df_solicitudes.at[i, 'Estado'] = 'Rechazado'
                     conn.update(worksheet="Solicitudes", data=df_solicitudes)
+                    st.toast("❌ Rechazado")
+                    time.sleep(1)
                     st.rerun()
 
 # =======================================================
@@ -320,6 +331,5 @@ elif menu == "📅 Calendario":
                     "color": c
                 })
     calendar(events=ev, options={"initialView": "dayGridMonth", "locale": "es"})
-
 
 
