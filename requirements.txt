@@ -4,4 +4,5 @@ streamlit-calendar
 pandas
 requests
 python-dateutil
+plotly
 
