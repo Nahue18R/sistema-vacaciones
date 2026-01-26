@@ -1,9 +1,10 @@
 streamlit
-st-gsheets-connection
+streamlit-gsheets
 streamlit-calendar
 pandas
 requests
 python-dateutil
+
 
 
 
