@@ -6,14 +6,14 @@ from datetime import timedelta, date, datetime
 import requests
 import time
 import os
-import threading  # <--- IMPORTANTE: Para la velocidad en segundo plano
+import threading
 from dateutil.relativedelta import relativedelta
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Sistema RRHH - Open25", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# ⚠️ TUS LINKS DE NGROK (ACTUALIZAR SI CAMBIAN)
+# ⚠️ TUS LINKS DE NGROK
 # ==========================================
 BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" 
 WEBHOOK_SOLICITUD = f"{BASE_URL}/webhook/solicitud-vacaciones"
@@ -56,6 +56,10 @@ st.markdown("""
 # --- LOGIN ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
+    
+# --- ESTADO PARA FILTRO VISUAL (EL TRUCO DE VELOCIDAD) ---
+if 'filas_procesadas' not in st.session_state:
+    st.session_state.filas_procesadas = []
 
 def login():
     c1, c2, c3 = st.columns([1,2,1])
@@ -75,20 +79,19 @@ if not st.session_state.logged_in:
     login()
     st.stop()
 
-# --- 1. CONEXIÓN Y DATOS (OPTIMIZADO CON CACHÉ) ---
+# --- 1. CONEXIÓN Y DATOS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-@st.cache_data(ttl=60)  # <-- Cache de 60 segundos para evitar error 429
+@st.cache_data(ttl=60)
 def cargar_datos():
     try:
         df_emp = conn.read(worksheet="Empleados")
         df_sol = conn.read(worksheet="Solicitudes")
 
-        # Limpieza básica
         df_emp.columns = df_emp.columns.str.strip()
         df_sol.columns = df_sol.columns.str.strip()
         
-        # --- BLINDAJE: Crear columnas si no existen ---
+        # Blindaje de columnas
         cols_requeridas = [
             "ID_Solicitud", "ID_Empleado", "Nombre_Empleado", "Tipo_Ausencia", 
             "Fecha_Inicio", "Fecha_Fin", "Total_Dias_Habiles", 
@@ -97,7 +100,6 @@ def cargar_datos():
         for col in cols_requeridas:
             if col not in df_sol.columns:
                 df_sol[col] = None
-        # ---------------------------------------------
 
         # Formateos
         df_emp['Fecha_Ingreso'] = pd.to_datetime(df_emp['Fecha_Ingreso'], dayfirst=True, errors='coerce')
@@ -118,18 +120,16 @@ if df_empleados is None:
 # --- 2. FUNCIONES ---
 
 def enviar_webhook_background(url, payload):
-    """Envía el webhook en un hilo separado para no congelar la app"""
+    """Envía el webhook en un hilo separado (súper rápido)"""
     def _send():
         try:
             requests.post(url, json=payload, timeout=5)
-        except:
-            pass # Si falla en el fondo, no interrumpimos al usuario
+        except: pass
     
     hilo = threading.Thread(target=_send)
     hilo.start()
 
 def calcular_dias_corridos(inicio, fin):
-    """Cuenta todos los días incluyendo fines de semana"""
     delta = fin - inicio
     return delta.days + 1 
 
@@ -158,6 +158,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Salir"):
         st.session_state.logged_in = False
+        st.session_state.filas_procesadas = [] # Limpiar cache visual al salir
         st.rerun()
 
 # =======================================================
@@ -203,8 +204,12 @@ if menu == "👥 Gestión de Personal":
 
     with col_kpi:
         st.metric("Saldo Disponible", f"{int(datos_emp['Dias_Restantes'])} días")
-        pendientes = len(df_solicitudes[(df_solicitudes['Nombre_Empleado'] == empleado_selec) & (df_solicitudes['Estado'] == 'Pendiente')])
-        st.metric("Solicitudes Activas", pendientes)
+        
+        # Filtro visual también aquí
+        pend_base = df_solicitudes[(df_solicitudes['Nombre_Empleado'] == empleado_selec) & (df_solicitudes['Estado'] == 'Pendiente')]
+        pend_base = pend_base[~pend_base.index.isin(st.session_state.filas_procesadas)]
+        
+        st.metric("Solicitudes Activas", len(pend_base))
 
     st.markdown("---")
 
@@ -223,7 +228,6 @@ if menu == "👥 Gestión de Personal":
                 sust = st.selectbox("Sustituto", l_sust)
                 motivo = st.text_area("Observaciones")
                 
-                # Cálculo de días corridos (incluye fines de semana)
                 dias = calcular_dias_corridos(fi, ff)
                 st.write(f"📅 Días totales a descontar: **{dias}**")
                 
@@ -231,8 +235,7 @@ if menu == "👥 Gestión de Personal":
                     if dias <= 0: st.error("Fechas incorrectas")
                     elif tipo == "Vacaciones" and dias > datos_emp['Dias_Restantes']: st.error("Sin saldo suficiente")
                     else:
-                        with st.spinner("🚀 Guardando en la nube..."):
-                            # 1. Crear fila nueva
+                        with st.spinner("🚀 Guardando..."):
                             nuevo = pd.DataFrame([{ 
                                 "ID_Solicitud": f"REQ-{len(df_solicitudes)+1000}",
                                 "ID_Empleado": datos_emp['ID_Empleado'],
@@ -245,10 +248,8 @@ if menu == "👥 Gestión de Personal":
                                 "Estado": "Pendiente",
                                 "Motivo_Comentario": motivo
                             }])
-                            # 2. Guardar en Excel (Esperamos a que termine)
                             conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nuevo], ignore_index=True))
                             
-                            # 3. Avisar al jefe (SEGUNDO PLANO - RAPIDO)
                             ret = ff + timedelta(days=1)
                             req_data = {
                                 "legajo": str(datos_emp['ID_Empleado']),
@@ -261,12 +262,9 @@ if menu == "👥 Gestión de Personal":
                                 "dias_restantes": int(datos_emp['Dias_Restantes'] - dias),
                                 "email_jefe": "nruiz@open25.com.ar"
                             }
-                            # Envío rápido
                             enviar_webhook_background(WEBHOOK_SOLICITUD, req_data)
                             
-                            # LIMPIAR CACHÉ
                             cargar_datos.clear()
-                            
                             st.success("¡Registrado!")
                             time.sleep(0.5) 
                             st.rerun()
@@ -288,7 +286,13 @@ if menu == "👥 Gestión de Personal":
 # =======================================================
 elif menu == "✅ Aprobaciones":
     st.header("Centro de Aprobaciones")
+    
+    # 1. Obtenemos las pendientes originales de los datos
     pend = df_solicitudes[df_solicitudes['Estado'] == 'Pendiente']
+    
+    # 2. APLICAMOS EL TRUCO: Filtramos las que ya tocamos en esta sesión
+    #    (Esto oculta la fila instantáneamente sin esperar a Google)
+    pend = pend[~pend.index.isin(st.session_state.filas_procesadas)]
     
     if pend.empty: 
         st.success("Todo al día 🚀")
@@ -305,15 +309,17 @@ elif menu == "✅ Aprobaciones":
                 c2.info(f"⏳ Días a descontar: {r['Total_Dias_Habiles']}")
                 
                 if c3.button("✅ Aprobar", key=f"y{i}", use_container_width=True):
-                    with st.spinner("Firmando digitalmente..."):
+                    # Agregamos a la lista de "ya procesados" para ocultarla visualmente YA
+                    st.session_state.filas_procesadas.append(i)
+                    
+                    with st.spinner("Procesando..."):
                         try:
-                            # Leer fresco para descontar
+                            # Leer fresco
                             df_fresh = conn.read(worksheet="Empleados")
                             df_fresh.columns = df_fresh.columns.str.strip()
                             
                             id_buscado = str(r['ID_Empleado']).strip().replace(".0", "")
                             df_fresh['ID_Empleado'] = df_fresh['ID_Empleado'].astype(str).str.strip().str.replace(".0", "", regex=False)
-                            
                             idx = df_fresh[df_fresh['ID_Empleado'] == id_buscado].index
                             
                             nuevo_saldo = 0
@@ -324,15 +330,14 @@ elif menu == "✅ Aprobaciones":
                                 dias_a_descontar = r['Total_Dias_Habiles']
                                 nuevo_saldo = saldo_anterior - dias_a_descontar
                                 
-                                # Guardamos nuevo saldo
+                                # Actualizar Google
                                 df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
                                 conn.update(worksheet="Empleados", data=df_fresh)
                                 
-                                # Actualizar estado Solicitud
                                 df_solicitudes.at[i, 'Estado'] = 'Aprobado'
                                 conn.update(worksheet="Solicitudes", data=df_solicitudes)
 
-                                # Enviar Mail (SEGUNDO PLANO - RAPIDO)
+                                # Webhook rápido
                                 fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
                                 payload = {
                                     "legajo": str(r['ID_Empleado']),
@@ -345,35 +350,31 @@ elif menu == "✅ Aprobaciones":
                                     "dias_restantes": int(nuevo_saldo),
                                     "email_jefe": "nruiz@open25.com.ar"
                                 }
-                                # Envío rápido
                                 enviar_webhook_background(WEBHOOK_APROBACION, payload)
                                 
-                                # LIMPIAR CACHÉ
                                 cargar_datos.clear()
-
-                                st.toast("✅ Aprobado (Correo saliendo en segundo plano)")
-                                time.sleep(1)
-                                st.rerun()
-
+                                st.toast("✅ Aprobado")
+                                time.sleep(0.5)
+                                st.rerun() # Al recargar, el filtro 'filas_procesadas' ocultará la fila
                             else:
                                 st.error(f"❌ Error: No encontré el legajo {id_buscado}.")
-
                         except Exception as e:
                             st.error(f"Error técnico: {e}")
                     
                 if c3.button("❌ Rechazar", key=f"n{i}", use_container_width=True):
+                    # Ocultar visualmente YA
+                    st.session_state.filas_procesadas.append(i)
+                    
                     df_solicitudes.at[i, 'Estado'] = 'Rechazado'
                     conn.update(worksheet="Solicitudes", data=df_solicitudes)
                     
-                    # LIMPIAR CACHÉ
                     cargar_datos.clear()
-                    
                     st.toast("❌ Rechazado")
-                    time.sleep(1)
+                    time.sleep(0.5)
                     st.rerun()
 
 # =======================================================
-# PÁGINA 3: CALENDARIO (ESTILO GOOGLE CALENDAR)
+# PÁGINA 3: CALENDARIO
 # =======================================================
 elif menu == "📅 Calendario":
     st.header("📅 Calendario de Ausencias")
@@ -382,12 +383,10 @@ elif menu == "📅 Calendario":
     c1.markdown("🟠 **Pendiente**")
     c2.markdown("🟢 **Aprobado**")
     c3.markdown("🔴 **Rechazado**")
-    
     st.markdown("---")
 
     if not df_solicitudes.empty:
         eventos_calendario = []
-        
         for _, r in df_solicitudes.iterrows():
             if pd.notna(r['Fecha_Inicio']) and pd.notna(r['Fecha_Fin']):
                 color_evento = "#3B82F6"
@@ -395,10 +394,8 @@ elif menu == "📅 Calendario":
                 elif r['Estado'] == 'Aprobado': color_evento = "#10B981"
                 elif r['Estado'] == 'Rechazado': color_evento = "#EF4444"
                 
-                # Fin visual + 1 día para que cubra el cuadro completo
                 try:
                     fin_visual = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
-                    
                     eventos_calendario.append({
                         "title": f"{r['Nombre_Empleado']} ({r['Tipo_Ausencia']})",
                         "start": str(r['Fecha_Inicio']),
@@ -425,9 +422,8 @@ elif menu == "📅 Calendario":
                 "list": "Lista"
             }
         }
-        
         calendar(events=eventos_calendario, options=calendar_options)
-            
     else:
         st.info("No hay vacaciones cargadas.")
+
 
