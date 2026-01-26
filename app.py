@@ -12,7 +12,7 @@ from dateutil.relativedelta import relativedelta
 st.set_page_config(page_title="Sistema RRHH - Open25", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# ⚠️ TUS LINKS DE NGROK
+# ⚠️ TUS LINKS DE NGROK (ACTUALIZAR SI CAMBIAN)
 # ==========================================
 BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" 
 WEBHOOK_SOLICITUD = f"{BASE_URL}/webhook/solicitud-vacaciones"
@@ -44,6 +44,11 @@ st.markdown("""
         border-radius: 8px;
         font-weight: 600;
     }
+    /* Ajuste para el calendario */
+    .fc-event-title {
+        font-weight: bold !important;
+        font-size: 14px !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -69,48 +74,52 @@ if not st.session_state.logged_in:
     login()
     st.stop()
 
-# --- 1. CONEXIÓN Y DATOS ---
+# --- 1. CONEXIÓN Y DATOS (OPTIMIZADO CON CACHÉ) ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-try:
-    df_empleados = conn.read(worksheet="Empleados", ttl="10m")
-    df_solicitudes = conn.read(worksheet="Solicitudes", ttl=2)
+@st.cache_data(ttl=60)  # <-- Esto evita el error 429 (Lee cada 60 segs)
+def cargar_datos():
+    try:
+        df_emp = conn.read(worksheet="Empleados")
+        df_sol = conn.read(worksheet="Solicitudes")
 
-    # Limpieza básica de espacios en los nombres de columnas
-    df_empleados.columns = df_empleados.columns.str.strip()
-    df_solicitudes.columns = df_solicitudes.columns.str.strip()
-    
-    # --- BLINDAJE: Asegurar que existan las columnas mínimas en Solicitudes ---
-    cols_requeridas = [
-        "ID_Solicitud", "ID_Empleado", "Nombre_Empleado", "Tipo_Ausencia", 
-        "Fecha_Inicio", "Fecha_Fin", "Total_Dias_Habiles", 
-        "Sustituto_Asignado", "Estado", "Motivo_Comentario"
-    ]
-    
-    for col in cols_requeridas:
-        if col not in df_solicitudes.columns:
-            df_solicitudes[col] = None  # Crea la columna vacía si no existe
+        # Limpieza básica
+        df_emp.columns = df_emp.columns.str.strip()
+        df_sol.columns = df_sol.columns.str.strip()
+        
+        # --- BLINDAJE: Crear columnas si no existen ---
+        cols_requeridas = [
+            "ID_Solicitud", "ID_Empleado", "Nombre_Empleado", "Tipo_Ausencia", 
+            "Fecha_Inicio", "Fecha_Fin", "Total_Dias_Habiles", 
+            "Sustituto_Asignado", "Estado", "Motivo_Comentario"
+        ]
+        for col in cols_requeridas:
+            if col not in df_sol.columns:
+                df_sol[col] = None
+        # ---------------------------------------------
 
-    # --- FINAL DEL BLINDAJE ---
+        # Formateos
+        df_emp['Fecha_Ingreso'] = pd.to_datetime(df_emp['Fecha_Ingreso'], dayfirst=True, errors='coerce')
+        df_emp['Dias_Restantes'] = pd.to_numeric(df_emp['Dias_Restantes'], errors='coerce').fillna(0)
+        df_emp['ID_Empleado'] = pd.to_numeric(df_emp['ID_Empleado'], errors='coerce').fillna(0).astype(int).astype(str)
 
-    # Formateo de datos
-    df_empleados['Fecha_Ingreso'] = pd.to_datetime(df_empleados['Fecha_Ingreso'], dayfirst=True, errors='coerce')
-    df_empleados['Dias_Restantes'] = pd.to_numeric(df_empleados['Dias_Restantes'], errors='coerce').fillna(0)
-    
-    # ID como string limpio
-    df_empleados['ID_Empleado'] = pd.to_numeric(df_empleados['ID_Empleado'], errors='coerce').fillna(0).astype(int).astype(str)
+        return df_emp, df_sol
 
-except Exception as e:
-    st.error(f"Error cargando datos: {e}")
-    time.sleep(5) # Damos tiempo para leer el error
+    except Exception as e:
+        st.error(f"Error de conexión con Google Sheets: {e}")
+        return None, None
+
+df_empleados, df_solicitudes = cargar_datos()
+
+if df_empleados is None:
     st.stop()
 
-# --- 2. FUNCIONES MODIFICADAS ---
+# --- 2. FUNCIONES ---
 
-# MODIFICACIÓN: Ahora cuenta TODOS los días (Sábados y Domingos incluidos)
 def calcular_dias_corridos(inicio, fin):
+    """Cuenta todos los días incluyendo fines de semana"""
     delta = fin - inicio
-    return delta.days + 1  # +1 para incluir el día de inicio también
+    return delta.days + 1 
 
 def calcular_antiguedad_texto(fecha_inicio):
     if pd.isna(fecha_inicio): return "⚠️ Revisar fecha en Excel"
@@ -202,7 +211,7 @@ if menu == "👥 Gestión de Personal":
                 sust = st.selectbox("Sustituto", l_sust)
                 motivo = st.text_area("Observaciones")
                 
-                # MODIFICACION: Usamos la nueva funcion de dias corridos
+                # Cálculo de días corridos (incluye fines de semana)
                 dias = calcular_dias_corridos(fi, ff)
                 st.write(f"📅 Días totales a descontar: **{dias}**")
                 
@@ -218,7 +227,7 @@ if menu == "👥 Gestión de Personal":
                             "Tipo_Ausencia": tipo,
                             "Fecha_Inicio": fi.strftime("%Y-%m-%d"),
                             "Fecha_Fin": ff.strftime("%Y-%m-%d"),
-                            "Total_Dias_Habiles": dias, # Guardamos dias corridos
+                            "Total_Dias_Habiles": dias,
                             "Sustituto_Asignado": sust,
                             "Estado": "Pendiente",
                             "Motivo_Comentario": motivo
@@ -243,6 +252,9 @@ if menu == "👥 Gestión de Personal":
                             requests.post(WEBHOOK_SOLICITUD, json=req_data, timeout=2)
                         except: pass
                         
+                        # LIMPIAR CACHÉ PARA VER EL CAMBIO YA
+                        cargar_datos.clear()
+                        
                         st.success("¡Registrado!")
                         time.sleep(1)
                         st.rerun()
@@ -251,10 +263,9 @@ if menu == "👥 Gestión de Personal":
         st.subheader("Historial")
         h = df_solicitudes[df_solicitudes['Nombre_Empleado'] == empleado_selec].sort_index(ascending=False)
         if not h.empty:
-            # MODIFICACION: Agregué la columna 'Total_Dias_Habiles' renombrada visualmente como 'Días'
             st.dataframe(
                 h[['Fecha_Inicio', 'Fecha_Fin', 'Total_Dias_Habiles', 'Tipo_Ausencia', 'Estado']], 
-                column_config={"Total_Dias_Habiles": "Días"}, # Renombramos cabecera
+                column_config={"Total_Dias_Habiles": "Días"},
                 hide_index=True, 
                 use_container_width=True
             )
@@ -285,8 +296,8 @@ elif menu == "✅ Aprobaciones":
                     st.info("🔄 Procesando aprobación...")
                     
                     try:
-                        # Leemos fresco para descontar
-                        df_fresh = conn.read(worksheet="Empleados", ttl=0)
+                        # Leer fresco para descontar
+                        df_fresh = conn.read(worksheet="Empleados")
                         df_fresh.columns = df_fresh.columns.str.strip()
                         
                         id_buscado = str(r['ID_Empleado']).strip().replace(".0", "")
@@ -296,7 +307,9 @@ elif menu == "✅ Aprobaciones":
                         
                         nuevo_saldo = 0
                         if not idx.empty:
-                            saldo_anterior = df_fresh.at[idx[0], 'Dias_Restantes']
+                            saldo_anterior = pd.to_numeric(df_fresh.at[idx[0], 'Dias_Restantes'], errors='coerce')
+                            if pd.isna(saldo_anterior): saldo_anterior = 0
+                            
                             dias_a_descontar = r['Total_Dias_Habiles']
                             nuevo_saldo = saldo_anterior - dias_a_descontar
                             
@@ -309,20 +322,25 @@ elif menu == "✅ Aprobaciones":
                             conn.update(worksheet="Solicitudes", data=df_solicitudes)
 
                             # Enviar Mail (n8n)
-                            fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
-                            payload = {
-                                "legajo": str(r['ID_Empleado']),
-                                "nombre": r['Nombre_Empleado'],
-                                "tipo": r['Tipo_Ausencia'],
-                                "desde": pd.to_datetime(r['Fecha_Inicio']).strftime("%d/%m/%Y"),
-                                "hasta": pd.to_datetime(r['Fecha_Fin']).strftime("%d/%m/%Y"),
-                                "dia_vuelve": fecha_ret.strftime("%d/%m/%Y"),
-                                "dias_tomados": int(r['Total_Dias_Habiles']),
-                                "dias_restantes": int(nuevo_saldo),
-                                "email_jefe": "nruiz@open25.com.ar"
-                            }
-                            requests.post(WEBHOOK_APROBACION, json=payload, timeout=3)
+                            try:
+                                fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
+                                payload = {
+                                    "legajo": str(r['ID_Empleado']),
+                                    "nombre": r['Nombre_Empleado'],
+                                    "tipo": r['Tipo_Ausencia'],
+                                    "desde": pd.to_datetime(r['Fecha_Inicio']).strftime("%d/%m/%Y"),
+                                    "hasta": pd.to_datetime(r['Fecha_Fin']).strftime("%d/%m/%Y"),
+                                    "dia_vuelve": fecha_ret.strftime("%d/%m/%Y"),
+                                    "dias_tomados": int(r['Total_Dias_Habiles']),
+                                    "dias_restantes": int(nuevo_saldo),
+                                    "email_jefe": "nruiz@open25.com.ar"
+                                }
+                                requests.post(WEBHOOK_APROBACION, json=payload, timeout=3)
+                            except: pass
                             
+                            # LIMPIAR CACHÉ
+                            cargar_datos.clear()
+
                             st.toast("✅ Aprobado y correo enviado")
                             time.sleep(2)
                             st.rerun()
@@ -331,11 +349,15 @@ elif menu == "✅ Aprobaciones":
                             st.error(f"❌ Error: No encontré el legajo {id_buscado}.")
 
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Error técnico: {e}")
                     
                 if c3.button("❌ Rechazar", key=f"n{i}", use_container_width=True):
                     df_solicitudes.at[i, 'Estado'] = 'Rechazado'
                     conn.update(worksheet="Solicitudes", data=df_solicitudes)
+                    
+                    # LIMPIAR CACHÉ
+                    cargar_datos.clear()
+                    
                     st.toast("❌ Rechazado")
                     time.sleep(1)
                     st.rerun()
@@ -346,11 +368,10 @@ elif menu == "✅ Aprobaciones":
 elif menu == "📅 Calendario":
     st.header("📅 Calendario de Ausencias")
     
-    # Leyenda visual para el jefe
     c1, c2, c3 = st.columns(3)
-    c1.markdown("🟠 **Pendiente de Autorización**")
-    c2.markdown("🟢 **Vacaciones Aprobadas**")
-    c3.markdown("🔴 **Rechazadas**")
+    c1.markdown("🟠 **Pendiente**")
+    c2.markdown("🟢 **Aprobado**")
+    c3.markdown("🔴 **Rechazado**")
     
     st.markdown("---")
 
@@ -358,29 +379,26 @@ elif menu == "📅 Calendario":
         eventos_calendario = []
         
         for _, r in df_solicitudes.iterrows():
-            # Definir colores según estado
-            color_evento = "#3B82F6" # Azul por defecto
-            if r['Estado'] == 'Pendiente':
-                color_evento = "#F59E0B" # Naranja (Atención)
-            elif r['Estado'] == 'Aprobado':
-                color_evento = "#10B981" # Verde (Ok)
-            elif r['Estado'] == 'Rechazado':
-                color_evento = "#EF4444" # Rojo
-            
-            # Ajuste de fechas: El calendario necesita que la fecha fin sea +1 día 
-            # para que visualmente cubra el cuadro completo del último día.
-            fin_visual = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
-            
-            eventos_calendario.append({
-                "title": f"{r['Nombre_Empleado']} ({r['Tipo_Ausencia']})",
-                "start": str(r['Fecha_Inicio']),
-                "end": fin_visual.strftime("%Y-%m-%d"),
-                "backgroundColor": color_evento,
-                "borderColor": color_evento,
-                "allDay": True
-            })
+            if pd.notna(r['Fecha_Inicio']) and pd.notna(r['Fecha_Fin']):
+                color_evento = "#3B82F6"
+                if r['Estado'] == 'Pendiente': color_evento = "#F59E0B"
+                elif r['Estado'] == 'Aprobado': color_evento = "#10B981"
+                elif r['Estado'] == 'Rechazado': color_evento = "#EF4444"
+                
+                # Fin visual + 1 día para que cubra el cuadro completo
+                try:
+                    fin_visual = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
+                    
+                    eventos_calendario.append({
+                        "title": f"{r['Nombre_Empleado']} ({r['Tipo_Ausencia']})",
+                        "start": str(r['Fecha_Inicio']),
+                        "end": fin_visual.strftime("%Y-%m-%d"),
+                        "backgroundColor": color_evento,
+                        "borderColor": color_evento,
+                        "allDay": True
+                    })
+                except: pass
 
-        # Configuración visual del calendario
         calendar_options = {
             "editable": False, 
             "navLinks": False,
@@ -398,18 +416,8 @@ elif menu == "📅 Calendario":
             }
         }
         
-        # Renderizar calendario
-        calendar(
-            events=eventos_calendario, 
-            options=calendar_options, 
-            custom_css="""
-                .fc-event-title {
-                    font-weight: bold !important;
-                    font-size: 14px !important;
-                }
-            """
-        )
+        calendar(events=eventos_calendario, options=calendar_options)
             
     else:
-        st.info("No hay vacaciones cargadas en el sistema aún.")
+        st.info("No hay vacaciones cargadas.")
 
