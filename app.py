@@ -6,6 +6,7 @@ from datetime import timedelta, date, datetime
 import requests
 import time
 import os
+import threading  # <--- IMPORTANTE: Para la velocidad en segundo plano
 from dateutil.relativedelta import relativedelta
 
 # --- CONFIGURACIÓN DE PÁGINA ---
@@ -77,7 +78,7 @@ if not st.session_state.logged_in:
 # --- 1. CONEXIÓN Y DATOS (OPTIMIZADO CON CACHÉ) ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-@st.cache_data(ttl=60)  # <-- Esto evita el error 429 (Lee cada 60 segs)
+@st.cache_data(ttl=60)  # <-- Cache de 60 segundos para evitar error 429
 def cargar_datos():
     try:
         df_emp = conn.read(worksheet="Empleados")
@@ -115,6 +116,17 @@ if df_empleados is None:
     st.stop()
 
 # --- 2. FUNCIONES ---
+
+def enviar_webhook_background(url, payload):
+    """Envía el webhook en un hilo separado para no congelar la app"""
+    def _send():
+        try:
+            requests.post(url, json=payload, timeout=5)
+        except:
+            pass # Si falla en el fondo, no interrumpimos al usuario
+    
+    hilo = threading.Thread(target=_send)
+    hilo.start()
 
 def calcular_dias_corridos(inicio, fin):
     """Cuenta todos los días incluyendo fines de semana"""
@@ -219,24 +231,24 @@ if menu == "👥 Gestión de Personal":
                     if dias <= 0: st.error("Fechas incorrectas")
                     elif tipo == "Vacaciones" and dias > datos_emp['Dias_Restantes']: st.error("Sin saldo suficiente")
                     else:
-                        # 1. Crear fila nueva
-                        nuevo = pd.DataFrame([{ 
-                            "ID_Solicitud": f"REQ-{len(df_solicitudes)+1000}",
-                            "ID_Empleado": datos_emp['ID_Empleado'],
-                            "Nombre_Empleado": empleado_selec,
-                            "Tipo_Ausencia": tipo,
-                            "Fecha_Inicio": fi.strftime("%Y-%m-%d"),
-                            "Fecha_Fin": ff.strftime("%Y-%m-%d"),
-                            "Total_Dias_Habiles": dias,
-                            "Sustituto_Asignado": sust,
-                            "Estado": "Pendiente",
-                            "Motivo_Comentario": motivo
-                        }])
-                        # 2. Guardar en Excel
-                        conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nuevo], ignore_index=True))
-                        
-                        # 3. Avisar al jefe (Webhook)
-                        try:
+                        with st.spinner("🚀 Guardando en la nube..."):
+                            # 1. Crear fila nueva
+                            nuevo = pd.DataFrame([{ 
+                                "ID_Solicitud": f"REQ-{len(df_solicitudes)+1000}",
+                                "ID_Empleado": datos_emp['ID_Empleado'],
+                                "Nombre_Empleado": empleado_selec,
+                                "Tipo_Ausencia": tipo,
+                                "Fecha_Inicio": fi.strftime("%Y-%m-%d"),
+                                "Fecha_Fin": ff.strftime("%Y-%m-%d"),
+                                "Total_Dias_Habiles": dias,
+                                "Sustituto_Asignado": sust,
+                                "Estado": "Pendiente",
+                                "Motivo_Comentario": motivo
+                            }])
+                            # 2. Guardar en Excel (Esperamos a que termine)
+                            conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nuevo], ignore_index=True))
+                            
+                            # 3. Avisar al jefe (SEGUNDO PLANO - RAPIDO)
                             ret = ff + timedelta(days=1)
                             req_data = {
                                 "legajo": str(datos_emp['ID_Empleado']),
@@ -249,15 +261,15 @@ if menu == "👥 Gestión de Personal":
                                 "dias_restantes": int(datos_emp['Dias_Restantes'] - dias),
                                 "email_jefe": "nruiz@open25.com.ar"
                             }
-                            requests.post(WEBHOOK_SOLICITUD, json=req_data, timeout=2)
-                        except: pass
-                        
-                        # LIMPIAR CACHÉ PARA VER EL CAMBIO YA
-                        cargar_datos.clear()
-                        
-                        st.success("¡Registrado!")
-                        time.sleep(1)
-                        st.rerun()
+                            # Envío rápido
+                            enviar_webhook_background(WEBHOOK_SOLICITUD, req_data)
+                            
+                            # LIMPIAR CACHÉ
+                            cargar_datos.clear()
+                            
+                            st.success("¡Registrado!")
+                            time.sleep(0.5) 
+                            st.rerun()
 
     with c_hist:
         st.subheader("Historial")
@@ -293,36 +305,34 @@ elif menu == "✅ Aprobaciones":
                 c2.info(f"⏳ Días a descontar: {r['Total_Dias_Habiles']}")
                 
                 if c3.button("✅ Aprobar", key=f"y{i}", use_container_width=True):
-                    st.info("🔄 Procesando aprobación...")
-                    
-                    try:
-                        # Leer fresco para descontar
-                        df_fresh = conn.read(worksheet="Empleados")
-                        df_fresh.columns = df_fresh.columns.str.strip()
-                        
-                        id_buscado = str(r['ID_Empleado']).strip().replace(".0", "")
-                        df_fresh['ID_Empleado'] = df_fresh['ID_Empleado'].astype(str).str.strip().str.replace(".0", "", regex=False)
-                        
-                        idx = df_fresh[df_fresh['ID_Empleado'] == id_buscado].index
-                        
-                        nuevo_saldo = 0
-                        if not idx.empty:
-                            saldo_anterior = pd.to_numeric(df_fresh.at[idx[0], 'Dias_Restantes'], errors='coerce')
-                            if pd.isna(saldo_anterior): saldo_anterior = 0
+                    with st.spinner("Firmando digitalmente..."):
+                        try:
+                            # Leer fresco para descontar
+                            df_fresh = conn.read(worksheet="Empleados")
+                            df_fresh.columns = df_fresh.columns.str.strip()
                             
-                            dias_a_descontar = r['Total_Dias_Habiles']
-                            nuevo_saldo = saldo_anterior - dias_a_descontar
+                            id_buscado = str(r['ID_Empleado']).strip().replace(".0", "")
+                            df_fresh['ID_Empleado'] = df_fresh['ID_Empleado'].astype(str).str.strip().str.replace(".0", "", regex=False)
                             
-                            # Guardamos nuevo saldo
-                            df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
-                            conn.update(worksheet="Empleados", data=df_fresh)
+                            idx = df_fresh[df_fresh['ID_Empleado'] == id_buscado].index
                             
-                            # Actualizar estado Solicitud
-                            df_solicitudes.at[i, 'Estado'] = 'Aprobado'
-                            conn.update(worksheet="Solicitudes", data=df_solicitudes)
+                            nuevo_saldo = 0
+                            if not idx.empty:
+                                saldo_anterior = pd.to_numeric(df_fresh.at[idx[0], 'Dias_Restantes'], errors='coerce')
+                                if pd.isna(saldo_anterior): saldo_anterior = 0
+                                
+                                dias_a_descontar = r['Total_Dias_Habiles']
+                                nuevo_saldo = saldo_anterior - dias_a_descontar
+                                
+                                # Guardamos nuevo saldo
+                                df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
+                                conn.update(worksheet="Empleados", data=df_fresh)
+                                
+                                # Actualizar estado Solicitud
+                                df_solicitudes.at[i, 'Estado'] = 'Aprobado'
+                                conn.update(worksheet="Solicitudes", data=df_solicitudes)
 
-                            # Enviar Mail (n8n)
-                            try:
+                                # Enviar Mail (SEGUNDO PLANO - RAPIDO)
                                 fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
                                 payload = {
                                     "legajo": str(r['ID_Empleado']),
@@ -335,21 +345,21 @@ elif menu == "✅ Aprobaciones":
                                     "dias_restantes": int(nuevo_saldo),
                                     "email_jefe": "nruiz@open25.com.ar"
                                 }
-                                requests.post(WEBHOOK_APROBACION, json=payload, timeout=3)
-                            except: pass
-                            
-                            # LIMPIAR CACHÉ
-                            cargar_datos.clear()
+                                # Envío rápido
+                                enviar_webhook_background(WEBHOOK_APROBACION, payload)
+                                
+                                # LIMPIAR CACHÉ
+                                cargar_datos.clear()
 
-                            st.toast("✅ Aprobado y correo enviado")
-                            time.sleep(2)
-                            st.rerun()
+                                st.toast("✅ Aprobado (Correo saliendo en segundo plano)")
+                                time.sleep(1)
+                                st.rerun()
 
-                        else:
-                            st.error(f"❌ Error: No encontré el legajo {id_buscado}.")
+                            else:
+                                st.error(f"❌ Error: No encontré el legajo {id_buscado}.")
 
-                    except Exception as e:
-                        st.error(f"Error técnico: {e}")
+                        except Exception as e:
+                            st.error(f"Error técnico: {e}")
                     
                 if c3.button("❌ Rechazar", key=f"n{i}", use_container_width=True):
                     df_solicitudes.at[i, 'Estado'] = 'Rechazado'
