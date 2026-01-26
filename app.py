@@ -1,6 +1,6 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
-from streamlit_calendar import calendar
+import plotly.express as px  # <--- NUEVA LIBRERÍA PARA EL GRÁFICO
 import pandas as pd
 from datetime import timedelta, date, datetime
 import requests
@@ -14,9 +14,7 @@ st.set_page_config(page_title="Sistema RRHH - Open25", layout="wide", initial_si
 # ==========================================
 # ⚠️ TUS LINKS DE NGROK
 # ==========================================
-# Pega aquí tu link actual de hoy
 BASE_URL = "https://spring-hedgeless-eccentrically.ngrok-free.dev" 
-
 WEBHOOK_SOLICITUD = f"{BASE_URL}/webhook/solicitud-vacaciones"
 WEBHOOK_APROBACION = f"{BASE_URL}/webhook/solicitud-aprobada"
 
@@ -75,7 +73,6 @@ if not st.session_state.logged_in:
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
-    df_feriados = conn.read(worksheet="Feriados", ttl="1d") 
     df_empleados = conn.read(worksheet="Empleados", ttl="10m")
     df_solicitudes = conn.read(worksheet="Solicitudes", ttl=2)
 
@@ -84,7 +81,6 @@ try:
     df_solicitudes.columns = df_solicitudes.columns.str.strip()
     
     # Formateo de datos
-    df_feriados['Fecha'] = pd.to_datetime(df_feriados['Fecha'], dayfirst=True, errors='coerce').dt.date
     df_empleados['Fecha_Ingreso'] = pd.to_datetime(df_empleados['Fecha_Ingreso'], dayfirst=True, errors='coerce')
     df_empleados['Dias_Restantes'] = pd.to_numeric(df_empleados['Dias_Restantes'], errors='coerce').fillna(0)
     # ID como string limpio
@@ -94,17 +90,12 @@ except Exception as e:
     time.sleep(2)
     st.rerun()
 
-# --- 2. FUNCIONES ---
-def calcular_dias_habiles(inicio, fin, feriados_lista):
-    dias_totales = 0
-    fecha_actual = inicio
-    while fecha_actual <= fin:
-        es_finde = fecha_actual.weekday() >= 5
-        es_feriado = fecha_actual in feriados_lista
-        if not es_finde and not es_feriado:
-            dias_totales += 1
-        fecha_actual += timedelta(days=1)
-    return dias_totales
+# --- 2. FUNCIONES MODIFICADAS ---
+
+# MODIFICACIÓN: Ahora cuenta TODOS los días (Sábados y Domingos incluidos)
+def calcular_dias_corridos(inicio, fin):
+    delta = fin - inicio
+    return delta.days + 1  # +1 para incluir el día de inicio también
 
 def calcular_antiguedad_texto(fecha_inicio):
     if pd.isna(fecha_inicio): return "⚠️ Revisar fecha en Excel"
@@ -196,13 +187,13 @@ if menu == "👥 Gestión de Personal":
                 sust = st.selectbox("Sustituto", l_sust)
                 motivo = st.text_area("Observaciones")
                 
-                feriados = df_feriados['Fecha'].tolist() if not df_feriados.empty else []
-                dias = calcular_dias_habiles(fi, ff, feriados)
-                st.write(f"📅 Días hábiles: **{dias}**")
+                # MODIFICACION: Usamos la nueva funcion de dias corridos
+                dias = calcular_dias_corridos(fi, ff)
+                st.write(f"📅 Días totales a descontar: **{dias}**")
                 
                 if st.form_submit_button("Guardar", use_container_width=True):
                     if dias <= 0: st.error("Fechas incorrectas")
-                    elif tipo == "Vacaciones" and dias > datos_emp['Dias_Restantes']: st.error("Sin saldo")
+                    elif tipo == "Vacaciones" and dias > datos_emp['Dias_Restantes']: st.error("Sin saldo suficiente")
                     else:
                         # 1. Crear fila nueva
                         nuevo = pd.DataFrame([{ 
@@ -212,7 +203,7 @@ if menu == "👥 Gestión de Personal":
                             "Tipo_Ausencia": tipo,
                             "Fecha_Inicio": fi.strftime("%Y-%m-%d"),
                             "Fecha_Fin": ff.strftime("%Y-%m-%d"),
-                            "Total_Dias_Habiles": dias,
+                            "Total_Dias_Habiles": dias, # Guardamos dias corridos
                             "Sustituto_Asignado": sust,
                             "Estado": "Pendiente",
                             "Motivo_Comentario": motivo
@@ -245,7 +236,13 @@ if menu == "👥 Gestión de Personal":
         st.subheader("Historial")
         h = df_solicitudes[df_solicitudes['Nombre_Empleado'] == empleado_selec].sort_index(ascending=False)
         if not h.empty:
-            st.dataframe(h[['Fecha_Inicio', 'Fecha_Fin', 'Tipo_Ausencia', 'Estado']], hide_index=True, use_container_width=True)
+            # MODIFICACION: Agregué la columna 'Total_Dias_Habiles' renombrada visualmente como 'Días'
+            st.dataframe(
+                h[['Fecha_Inicio', 'Fecha_Fin', 'Total_Dias_Habiles', 'Tipo_Ausencia', 'Estado']], 
+                column_config={"Total_Dias_Habiles": "Días"}, # Renombramos cabecera
+                hide_index=True, 
+                use_container_width=True
+            )
         else: st.info("Sin registros.")
 
 # =======================================================
@@ -270,20 +267,15 @@ elif menu == "✅ Aprobaciones":
                 c2.info(f"⏳ Días a descontar: {r['Total_Dias_Habiles']}")
                 
                 if c3.button("✅ Aprobar", key=f"y{i}", use_container_width=True):
-                    # 1. Cambiar estado visualmente
                     st.info("🔄 Procesando aprobación...")
                     
-                    # 2. Descontar saldo
                     try:
-                        # Leemos fresco
+                        # Leemos fresco para descontar
                         df_fresh = conn.read(worksheet="Empleados", ttl=0)
                         df_fresh.columns = df_fresh.columns.str.strip()
                         
-                        # Convertimos ambos IDs a string limpio para comparar
                         id_buscado = str(r['ID_Empleado']).strip().replace(".0", "")
                         df_fresh['ID_Empleado'] = df_fresh['ID_Empleado'].astype(str).str.strip().str.replace(".0", "", regex=False)
-                        
-                        st.write(f"🔎 Buscando legajo: '{id_buscado}' en la base de datos...")
                         
                         idx = df_fresh[df_fresh['ID_Empleado'] == id_buscado].index
                         
@@ -293,67 +285,38 @@ elif menu == "✅ Aprobaciones":
                             dias_a_descontar = r['Total_Dias_Habiles']
                             nuevo_saldo = saldo_anterior - dias_a_descontar
                             
-                            st.write(f"✅ Empleado encontrado. Saldo anterior: {saldo_anterior}. A descontar: {dias_a_descontar}. Nuevo saldo: {nuevo_saldo}")
-                            
-                            # Guardamos en Excel
+                            # Guardamos nuevo saldo
                             df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
                             conn.update(worksheet="Empleados", data=df_fresh)
-                            st.success("💰 Saldo actualizado en Excel.")
+                            
+                            # Actualizar estado Solicitud
+                            df_solicitudes.at[i, 'Estado'] = 'Aprobado'
+                            conn.update(worksheet="Solicitudes", data=df_solicitudes)
+
+                            # Enviar Mail (n8n)
+                            fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
+                            payload = {
+                                "legajo": str(r['ID_Empleado']),
+                                "nombre": r['Nombre_Empleado'],
+                                "tipo": r['Tipo_Ausencia'],
+                                "desde": pd.to_datetime(r['Fecha_Inicio']).strftime("%d/%m/%Y"),
+                                "hasta": pd.to_datetime(r['Fecha_Fin']).strftime("%d/%m/%Y"),
+                                "dia_vuelve": fecha_ret.strftime("%d/%m/%Y"),
+                                "dias_tomados": int(r['Total_Dias_Habiles']),
+                                "dias_restantes": int(nuevo_saldo),
+                                "email_jefe": "nruiz@open25.com.ar"
+                            }
+                            requests.post(WEBHOOK_APROBACION, json=payload, timeout=3)
+                            
+                            st.toast("✅ Aprobado y correo enviado")
+                            time.sleep(2)
+                            st.rerun()
+
                         else:
-                            st.error(f"❌ ERROR CRÍTICO: No encontré el legajo {id_buscado} en la hoja Empleados. Revisa que los números sean idénticos.")
-                            st.stop() # Detenemos aquí para que veas el error
+                            st.error(f"❌ Error: No encontré el legajo {id_buscado}.")
 
-                        # 3. Actualizar estado de la solicitud
-                        df_solicitudes.at[i, 'Estado'] = 'Aprobado'
-                        conn.update(worksheet="Solicitudes", data=df_solicitudes)
-
-                        # 4. Mandar mail
-                        st.write("📧 Intentando enviar correo a n8n...")
-                        fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
-                        payload = {
-                            "legajo": str(r['ID_Empleado']),
-                            "nombre": r['Nombre_Empleado'],
-                            "tipo": r['Tipo_Ausencia'],
-                            "desde": pd.to_datetime(r['Fecha_Inicio']).strftime("%d/%m/%Y"),
-                            "hasta": pd.to_datetime(r['Fecha_Fin']).strftime("%d/%m/%Y"),
-                            "dia_vuelve": fecha_ret.strftime("%d/%m/%Y"),
-                            "dias_tomados": int(r['Total_Dias_Habiles']),
-                            "dias_restantes": int(nuevo_saldo),
-                            "email_jefe": "nruiz@open25.com.ar"
-                        }
-                        st.json(payload) # Muestra en pantalla qué datos está enviando
-                        
-                        resp = requests.post(WEBHOOK_APROBACION, json=payload, timeout=5)
-                        
-                        if resp.status_code == 200:
-                            st.success("📧 Correo enviado exitosamente (n8n respondió OK).")
-                        else:
-                            st.error(f"⚠️ n8n respondió con error: {resp.status_code}")
-
-                        time.sleep(4) # Pausa para que leas los mensajes
-                        st.rerun()
-                        
                     except Exception as e:
-                        st.error(f"Ocurrió un error inesperado: {e}")
-                    # 3. Mandar mail
-                    try: 
-                        fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
-                        requests.post(WEBHOOK_APROBACION, json={
-                            "legajo": str(r['ID_Empleado']),
-                            "nombre": r['Nombre_Empleado'],
-                            "tipo": r['Tipo_Ausencia'],
-                            "desde": pd.to_datetime(r['Fecha_Inicio']).strftime("%d/%m/%Y"),
-                            "hasta": pd.to_datetime(r['Fecha_Fin']).strftime("%d/%m/%Y"),
-                            "dia_vuelve": fecha_ret.strftime("%d/%m/%Y"),
-                            "dias_tomados": int(r['Total_Dias_Habiles']),
-                            "dias_restantes": int(nuevo_saldo),
-                            "email_jefe": "nruiz@open25.com.ar"
-                        }, timeout=3)
-                    except: pass
-                    
-                    st.toast("✅ Aprobado")
-                    time.sleep(1)
-                    st.rerun()
+                        st.error(f"Error: {e}")
                     
                 if c3.button("❌ Rechazar", key=f"n{i}", use_container_width=True):
                     df_solicitudes.at[i, 'Estado'] = 'Rechazado'
@@ -363,25 +326,48 @@ elif menu == "✅ Aprobaciones":
                     st.rerun()
 
 # =======================================================
-# PÁGINA 3: CALENDARIO
+# PÁGINA 3: CALENDARIO (MODIFICADO TIPO GANTT)
 # =======================================================
 elif menu == "📅 Calendario":
-    st.header("Calendario Global")
-    ev = []
+    st.header("Cronograma de Vacaciones (Gantt)")
+    
     if not df_solicitudes.empty:
-        for _, r in df_solicitudes.iterrows():
-            if pd.notna(r['Fecha_Inicio']):
-                c = "#f59e0b" if r['Estado'] == 'Pendiente' else "#10b981"
-                if r['Estado'] == 'Rechazado': c = "#ef4444"
-                ev.append({
-                    "title": r['Nombre_Empleado'], 
-                    "start": str(r['Fecha_Inicio']), 
-                    "end": str(pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)), 
-                    "color": c
-                })
-    calendar(events=ev, options={"initialView": "dayGridMonth", "locale": "es"})
+        # Preparamos datos para Plotly
+        df_cal = df_solicitudes.copy()
+        
+        # Filtramos solo Aprobados o Pendientes (Opcional, aquí muestro todo menos rechazados)
+        df_cal = df_cal[df_cal['Estado'] != 'Rechazado']
+        
+        if not df_cal.empty:
+            df_cal['Inicio'] = pd.to_datetime(df_cal['Fecha_Inicio'])
+            df_cal['Fin'] = pd.to_datetime(df_cal['Fecha_Fin'])
+            # Plotly necesita que el fin sea +1 día para que la barra se vea completa visualmente hasta el final del día
+            df_cal['Fin_Visual'] = df_cal['Fin'] + timedelta(days=1)
 
-
+            # CREAMOS EL DIAGRAMA DE GANTT
+            fig = px.timeline(
+                df_cal, 
+                x_start="Inicio", 
+                x_end="Fin_Visual", 
+                y="Nombre_Empleado", 
+                color="Tipo_Ausencia",
+                hover_data=["Estado", "Total_Dias_Habiles"],
+                title="Visualización de Ausencias"
+            )
+            
+            # Ajustes visuales
+            fig.update_yaxes(autorange="reversed", title="") # Para que los nombres salgan en orden
+            fig.update_layout(
+                xaxis_title="Fecha",
+                showlegend=True,
+                height=400 + (len(df_cal) * 20) # Altura dinámica
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No hay vacaciones activas para mostrar.")
+    else:
+        st.info("No hay registros.")
 
 
 
