@@ -1,6 +1,6 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
-import plotly.express as px  # <--- NUEVA LIBRERÍA PARA EL GRÁFICO
+from streamlit_calendar import calendar
 import pandas as pd
 from datetime import timedelta, date, datetime
 import requests
@@ -368,6 +368,7 @@ elif menu == "📅 Calendario":
             st.info("No hay vacaciones activas para mostrar.")
     else:
         st.info("No hay registros.")
+
 
 
 
