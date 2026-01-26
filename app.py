@@ -326,49 +326,74 @@ elif menu == "✅ Aprobaciones":
                     st.rerun()
 
 # =======================================================
-# PÁGINA 3: CALENDARIO (MODIFICADO TIPO GANTT)
+# PÁGINA 3: CALENDARIO (ESTILO GOOGLE CALENDAR)
 # =======================================================
 elif menu == "📅 Calendario":
-    st.header("Cronograma de Vacaciones (Gantt)")
+    st.header("📅 Calendario de Ausencias")
     
+    # Leyenda visual para el jefe
+    c1, c2, c3 = st.columns(3)
+    c1.markdown("🟠 **Pendiente de Autorización**")
+    c2.markdown("🟢 **Vacaciones Aprobadas**")
+    c3.markdown("🔴 **Rechazadas**")
+    
+    st.markdown("---")
+
     if not df_solicitudes.empty:
-        # Preparamos datos para Plotly
-        df_cal = df_solicitudes.copy()
+        eventos_calendario = []
         
-        # Filtramos solo Aprobados o Pendientes (Opcional, aquí muestro todo menos rechazados)
-        df_cal = df_cal[df_cal['Estado'] != 'Rechazado']
-        
-        if not df_cal.empty:
-            df_cal['Inicio'] = pd.to_datetime(df_cal['Fecha_Inicio'])
-            df_cal['Fin'] = pd.to_datetime(df_cal['Fecha_Fin'])
-            # Plotly necesita que el fin sea +1 día para que la barra se vea completa visualmente hasta el final del día
-            df_cal['Fin_Visual'] = df_cal['Fin'] + timedelta(days=1)
+        for _, r in df_solicitudes.iterrows():
+            # Definir colores según estado
+            color_evento = "#3B82F6" # Azul por defecto
+            if r['Estado'] == 'Pendiente':
+                color_evento = "#F59E0B" # Naranja (Atención)
+            elif r['Estado'] == 'Aprobado':
+                color_evento = "#10B981" # Verde (Ok)
+            elif r['Estado'] == 'Rechazado':
+                color_evento = "#EF4444" # Rojo
+            
+            # Ajuste de fechas: El calendario necesita que la fecha fin sea +1 día 
+            # para que visualmente cubra el cuadro completo del último día.
+            fin_visual = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
+            
+            eventos_calendario.append({
+                "title": f"{r['Nombre_Empleado']} ({r['Tipo_Ausencia']})",
+                "start": str(r['Fecha_Inicio']),
+                "end": fin_visual.strftime("%Y-%m-%d"),
+                "backgroundColor": color_evento,
+                "borderColor": color_evento,
+                "allDay": True
+            })
 
-            # CREAMOS EL DIAGRAMA DE GANTT
-            fig = px.timeline(
-                df_cal, 
-                x_start="Inicio", 
-                x_end="Fin_Visual", 
-                y="Nombre_Empleado", 
-                color="Tipo_Ausencia",
-                hover_data=["Estado", "Total_Dias_Habiles"],
-                title="Visualización de Ausencias"
-            )
+        # Configuración visual del calendario
+        calendar_options = {
+            "editable": False, 
+            "navLinks": False,
+            "headerToolbar": {
+                "left": "today prev,next",
+                "center": "title",
+                "right": "dayGridMonth,listMonth"
+            },
+            "initialView": "dayGridMonth",
+            "locale": "es",
+            "buttonText": {
+                "today": "Hoy",
+                "month": "Mes",
+                "list": "Lista"
+            }
+        }
+        
+        # Renderizar calendario
+        calendar(
+            events=eventos_calendario, 
+            options=calendar_options, 
+            custom_css="""
+                .fc-event-title {
+                    font-weight: bold !important;
+                    font-size: 14px !important;
+                }
+            """
+        )
             
-            # Ajustes visuales
-            fig.update_yaxes(autorange="reversed", title="") # Para que los nombres salgan en orden
-            fig.update_layout(
-                xaxis_title="Fecha",
-                showlegend=True,
-                height=400 + (len(df_cal) * 20) # Altura dinámica
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay vacaciones activas para mostrar.")
     else:
-        st.info("No hay registros.")
-
-
-
-
+        st.info("No hay vacaciones cargadas en el sistema aún.")
