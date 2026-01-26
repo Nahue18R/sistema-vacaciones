@@ -76,19 +76,34 @@ try:
     df_empleados = conn.read(worksheet="Empleados", ttl="10m")
     df_solicitudes = conn.read(worksheet="Solicitudes", ttl=2)
 
-    # Limpieza de columnas
+    # Limpieza básica de espacios en los nombres de columnas
     df_empleados.columns = df_empleados.columns.str.strip()
     df_solicitudes.columns = df_solicitudes.columns.str.strip()
     
+    # --- BLINDAJE: Asegurar que existan las columnas mínimas en Solicitudes ---
+    cols_requeridas = [
+        "ID_Solicitud", "ID_Empleado", "Nombre_Empleado", "Tipo_Ausencia", 
+        "Fecha_Inicio", "Fecha_Fin", "Total_Dias_Habiles", 
+        "Sustituto_Asignado", "Estado", "Motivo_Comentario"
+    ]
+    
+    for col in cols_requeridas:
+        if col not in df_solicitudes.columns:
+            df_solicitudes[col] = None  # Crea la columna vacía si no existe
+
+    # --- FINAL DEL BLINDAJE ---
+
     # Formateo de datos
     df_empleados['Fecha_Ingreso'] = pd.to_datetime(df_empleados['Fecha_Ingreso'], dayfirst=True, errors='coerce')
     df_empleados['Dias_Restantes'] = pd.to_numeric(df_empleados['Dias_Restantes'], errors='coerce').fillna(0)
+    
     # ID como string limpio
     df_empleados['ID_Empleado'] = pd.to_numeric(df_empleados['ID_Empleado'], errors='coerce').fillna(0).astype(int).astype(str)
 
 except Exception as e:
-    time.sleep(2)
-    st.rerun()
+    st.error(f"Error cargando datos: {e}")
+    time.sleep(5) # Damos tiempo para leer el error
+    st.stop()
 
 # --- 2. FUNCIONES MODIFICADAS ---
 
@@ -397,3 +412,4 @@ elif menu == "📅 Calendario":
             
     else:
         st.info("No hay vacaciones cargadas en el sistema aún.")
+
