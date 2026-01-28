@@ -57,7 +57,7 @@ st.markdown("""
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
     
-# --- ESTADO PARA FILTRO VISUAL (EL TRUCO DE VELOCIDAD) ---
+# --- ESTADO PARA FILTRO VISUAL (VELOCIDAD DE INTERFAZ) ---
 if 'filas_procesadas' not in st.session_state:
     st.session_state.filas_procesadas = []
 
@@ -123,7 +123,7 @@ def enviar_webhook_background(url, payload):
     """Envía el webhook en un hilo separado (súper rápido)"""
     def _send():
         try:
-            requests.post(url, json=payload, timeout=5)
+            requests.post(url, json=payload, timeout=4)
         except: pass
     
     hilo = threading.Thread(target=_send)
@@ -235,7 +235,8 @@ if menu == "👥 Gestión de Personal":
                     if dias <= 0: st.error("Fechas incorrectas")
                     elif tipo == "Vacaciones" and dias > datos_emp['Dias_Restantes']: st.error("Sin saldo suficiente")
                     else:
-                        with st.spinner("🚀 Guardando..."):
+                        with st.spinner("🚀 Enviando solicitud..."):
+                            # 1. PREPARAR DATOS (Instantáneo)
                             nuevo = pd.DataFrame([{ 
                                 "ID_Solicitud": f"REQ-{len(df_solicitudes)+1000}",
                                 "ID_Empleado": datos_emp['ID_Empleado'],
@@ -248,7 +249,6 @@ if menu == "👥 Gestión de Personal":
                                 "Estado": "Pendiente",
                                 "Motivo_Comentario": motivo
                             }])
-                            conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nuevo], ignore_index=True))
                             
                             ret = ff + timedelta(days=1)
                             req_data = {
@@ -262,8 +262,14 @@ if menu == "👥 Gestión de Personal":
                                 "dias_restantes": int(datos_emp['Dias_Restantes'] - dias),
                                 "email_jefe": "nruiz@open25.com.ar"
                             }
+
+                            # 2. DISPARAR MAIL PRIMERO (Para que salga YA, mientras se guarda lo demás)
                             enviar_webhook_background(WEBHOOK_SOLICITUD, req_data)
                             
+                            # 3. GUARDAR EN EXCEL (Esto es lo lento, pero el mail ya salió)
+                            conn.update(worksheet="Solicitudes", data=pd.concat([df_solicitudes, nuevo], ignore_index=True))
+                            
+                            # 4. LIMPIEZA
                             cargar_datos.clear()
                             st.success("¡Registrado!")
                             time.sleep(0.5) 
@@ -291,7 +297,6 @@ elif menu == "✅ Aprobaciones":
     pend = df_solicitudes[df_solicitudes['Estado'] == 'Pendiente']
     
     # 2. APLICAMOS EL TRUCO: Filtramos las que ya tocamos en esta sesión
-    #    (Esto oculta la fila instantáneamente sin esperar a Google)
     pend = pend[~pend.index.isin(st.session_state.filas_procesadas)]
     
     if pend.empty: 
@@ -309,12 +314,15 @@ elif menu == "✅ Aprobaciones":
                 c2.info(f"⏳ Días a descontar: {r['Total_Dias_Habiles']}")
                 
                 if c3.button("✅ Aprobar", key=f"y{i}", use_container_width=True):
-                    # Agregamos a la lista de "ya procesados" para ocultarla visualmente YA
+                    # Ocultar YA
                     st.session_state.filas_procesadas.append(i)
                     
                     with st.spinner("Procesando..."):
                         try:
-                            # Leer fresco
+                            # 1. PREPARAR DATOS (Instantáneo)
+                            fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
+                            
+                            # Leemos datos para calcular saldo, pero NO actualizamos Google todavía
                             df_fresh = conn.read(worksheet="Empleados")
                             df_fresh.columns = df_fresh.columns.str.strip()
                             
@@ -326,19 +334,8 @@ elif menu == "✅ Aprobaciones":
                             if not idx.empty:
                                 saldo_anterior = pd.to_numeric(df_fresh.at[idx[0], 'Dias_Restantes'], errors='coerce')
                                 if pd.isna(saldo_anterior): saldo_anterior = 0
-                                
-                                dias_a_descontar = r['Total_Dias_Habiles']
-                                nuevo_saldo = saldo_anterior - dias_a_descontar
-                                
-                                # Actualizar Google
-                                df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
-                                conn.update(worksheet="Empleados", data=df_fresh)
-                                
-                                df_solicitudes.at[i, 'Estado'] = 'Aprobado'
-                                conn.update(worksheet="Solicitudes", data=df_solicitudes)
+                                nuevo_saldo = saldo_anterior - r['Total_Dias_Habiles']
 
-                                # Webhook rápido
-                                fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
                                 payload = {
                                     "legajo": str(r['ID_Empleado']),
                                     "nombre": r['Nombre_Empleado'],
@@ -350,12 +347,21 @@ elif menu == "✅ Aprobaciones":
                                     "dias_restantes": int(nuevo_saldo),
                                     "email_jefe": "nruiz@open25.com.ar"
                                 }
+                                
+                                # 2. DISPARAR MAIL YA (Prioridad total)
                                 enviar_webhook_background(WEBHOOK_APROBACION, payload)
+
+                                # 3. ACTUALIZAR GOOGLE (Lento, pero el usuario ya vió el click y el mail salió)
+                                df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
+                                conn.update(worksheet="Empleados", data=df_fresh)
+                                
+                                df_solicitudes.at[i, 'Estado'] = 'Aprobado'
+                                conn.update(worksheet="Solicitudes", data=df_solicitudes)
                                 
                                 cargar_datos.clear()
                                 st.toast("✅ Aprobado")
                                 time.sleep(0.5)
-                                st.rerun() # Al recargar, el filtro 'filas_procesadas' ocultará la fila
+                                st.rerun() 
                             else:
                                 st.error(f"❌ Error: No encontré el legajo {id_buscado}.")
                         except Exception as e:
@@ -425,5 +431,3 @@ elif menu == "📅 Calendario":
         calendar(events=eventos_calendario, options=calendar_options)
     else:
         st.info("No hay vacaciones cargadas.")
-
-
