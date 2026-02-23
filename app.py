@@ -432,3 +432,4 @@ elif menu == "📅 Calendario":
         calendar(events=eventos_calendario, options=calendar_options)
     else:
         st.info("No hay vacaciones cargadas.")
+
