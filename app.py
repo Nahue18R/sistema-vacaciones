@@ -85,8 +85,9 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 @st.cache_data(ttl=60)
 def cargar_datos():
     try:
-        df_emp = conn.read(worksheet="Empleados")
-        df_sol = conn.read(worksheet="Solicitudes")
+        # AQUÍ ESTÁ LA MAGIA: ttl=0 obliga a que no use su memoria secreta
+        df_emp = conn.read(worksheet="Empleados", ttl=0)
+        df_sol = conn.read(worksheet="Solicitudes", ttl=0)
 
         df_emp.columns = df_emp.columns.str.strip()
         df_sol.columns = df_sol.columns.str.strip()
@@ -322,8 +323,8 @@ elif menu == "✅ Aprobaciones":
                             # 1. PREPARAR DATOS (Instantáneo)
                             fecha_ret = pd.to_datetime(r['Fecha_Fin']) + timedelta(days=1)
                             
-                            # Leemos datos para calcular saldo, pero NO actualizamos Google todavía
-                            df_fresh = conn.read(worksheet="Empleados")
+                            # AQUÍ TAMBIÉN AGREGAMOS ttl=0 para leer el saldo fresco sin memoria secreta
+                            df_fresh = conn.read(worksheet="Empleados", ttl=0)
                             df_fresh.columns = df_fresh.columns.str.strip()
                             
                             id_buscado = str(r['ID_Empleado']).strip().replace(".0", "")
@@ -351,7 +352,7 @@ elif menu == "✅ Aprobaciones":
                                 # 2. DISPARAR MAIL YA (Prioridad total)
                                 enviar_webhook_background(WEBHOOK_APROBACION, payload)
 
-                                # 3. ACTUALIZAR GOOGLE (Lento, pero el usuario ya vió el click y el mail salió)
+                                # 3. ACTUALIZAR GOOGLE 
                                 df_fresh.at[idx[0], 'Dias_Restantes'] = nuevo_saldo
                                 conn.update(worksheet="Empleados", data=df_fresh)
                                 
